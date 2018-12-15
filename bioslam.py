@@ -61,19 +61,19 @@ class ATTRACTOR(object):
         self.tauI = 0.002 # time constant for inhibitory neurons
         self.gammaI = -7.5 # tonic inhibition for inhibitor neurons
         
-        self.std = 30#15 # intra-ring weighting field width (degrees)
-        self.w = 10#6 # intra-ring weighting field strength
+        self.std = 15 # intra-ring weighting field width (degrees)
+        self.w = 6.0 # intra-ring weighting field strength
 
-        self.WeightEI = -8.0 # E -> I weight
-        self.WeightIE = 0.880 # I -> E weight
-        self.WeightII = -4.0 # I -> I weight
+        self.WeightEI = -8.0    # E -> I weight scalar
+        self.WeightIE = 0.880   # I -> E weight scalar
+        self.WeightII = -4.0    # I -> I weight scalar
 
         # VARIABLES 
         self.E = np.zeros(self.NE) # NE number of excitory neurons
-        self.I = 0 # One inhibitor neuron
-        self.W_EI = self.WeightEI * np.ones(self.NE) # E -> I Weights
-        self.W_IE = self.WeightIE * np.ones(self.NE) # I -> I Weights
-        self.W_II = self.WeightII * np.ones(self.NE) # I -> I Weights
+        self.I = 0                 # One inhibitor neuron
+        self.W_EI = self.WeightEI * np.ones(self.NE)                    # E -> I Weights
+        self.W_IE = self.WeightIE * np.ones(self.NE)                    # I -> I Weights
+        self.W_II = self.WeightII                                       # I -> I Weights
         self.W_EE = self.build_weight_matrix(self.NE, self.std, self.w) # E -> E Weights
 
         # Recurrent variable
@@ -82,24 +82,28 @@ class ATTRACTOR(object):
     def build_weight_matrix(self, NE, std, w):
         # This process is kind of like building the attractor basin?
         variance = std**2 / (360**2) * NE**2
+        print(variance)
         i = np.ones((NE,1)) * np.arange(1,NE+1)
         j = np.arange(1,NE+1).reshape(NE,1) * np.ones((1,NE))
         d_choices = np.array((np.absolute(j + NE - i), np.absolute(i + NE - j), np.absolute(j - i)))
         d = np.amin(d_choices, axis=0)
         W = np.exp((-d * d)/variance)
-        W = w * np.true_divide(W, (np.ones((NE,1)) * np.sum(W)))
+        
+        term = np.true_divide(W, (np.ones(NE) * np.sum(W, axis=0)))
+        W = w * term
         return W
 
     def step(self, IN):
         self.lastE = self.E
-        VE = self.W_EI * self.I + np.dot(self.W_EE, self.E) + self.gammaE + IN # Excitory compute
-        #     (75,1)      scalar          (75,75)   (75,1)      scalar    (1,75)
-        VI = self.W_II * self.I + self.W_IE * self.E + self.gammaI # Inhibitor compute 
+        VE = self.W_EI * self.I + np.dot(self.W_EE, self.E) + self.gammaE + IN # Excitory compute)
+        VI = self.W_II * self.I + np.dot(self.W_IE, self.E) + self.gammaI # Inhibitor compute 
+        
         FE = self.tanh_activation(VE) # Excitory activation
         FI = self.tanh_activation(VI) # Inhibitor activation
+        
         self.E = self.E + self.dt/self.tauE * (-self.E + FE) # Update excitory activity
         self.I = self.I + self.dt/self.tauI * (-self.I + FI) # Update inhibitor activity
-
+        
         diff = np.sum(np.absolute(self.lastE - self.E)) / np.sum(self.E) 
         return self.E, diff
 
@@ -114,26 +118,28 @@ NN_w = net.W_EE
 plt.imshow(NN_w)
 plt.show()
 NE = net.NE
-stim = np.zeros(NE)
-stim[22:42] = np.concatenate((np.arange(0,1,0.1), np.arange(1,0,-0.1)))
-#np.arange(NE) * 0.1 
-IN = np.concatenate((np.ones((200,1)) * stim,np.zeros((200,NE))), axis=0)
-print(np.shape(IN)[0])
+#IN = np.concatenate((np.ones((100,1)) * np.random.random((1,NE)),np.zeros((100,NE))), axis=0)
+IN0 = 0.5 * (0.1 * np.random.random((1,NE)) + np.exp(-(np.power((np.arange(1,76) - 25),2))/40))
+IN1 = 0.5 * (0.1 * np.random.random((1,NE)) + np.exp(-(np.power((np.arange(1,76) - 45),2))/40))
+IN = np.ones((150,1)) * IN0 + IN1
+#IN = np.ones((10, 75))
+#print(np.shape(IN)[0])
 results = np.zeros((NE, np.shape(IN)[0]))
 print("TESTS: {}".format(np.shape(results)[1]))
 
 
 for put in range(len(IN)):
     E, diff = net.step(IN[put])
-    #print(diff)
+    #print("INPUT TEST {} [ERROR]:{}".format(put,np.around(diff, decimals=6)))
     results[:,put] = E
-    """
     plt.clf()
     plt.ylim((0,1))
     plt.stem(E, markerfmt='C0.')
     plt.pause(0.05)
-    """
 
+plt.stem(results[:,-1])
+plt.show()
+"""
 from mpl_toolkits.mplot3d import Axes3D
 
 fig = plt.figure()
@@ -141,3 +147,4 @@ ax = fig.gca(projection='3d')
 X,Y = np.mgrid[0:NE:1, 0:np.shape(IN)[0]:1]
 surf = ax.plot_surface(X, Y, results, cmap='afmhot')
 plt.show()
+"""
