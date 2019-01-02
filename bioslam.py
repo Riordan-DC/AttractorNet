@@ -1,150 +1,178 @@
 #! /usr/bin/env python3
 
-"""
-Multi-dimensional continuous attractor network
-Modeling non-linear systems.
-
-Model:
-    Array of neural units with fixed weightings. These fixed
-        weightings are caculated to promote stronger connections
-        to close neurons and smaller connections to distance neurons.
-        In a weight matrix this looks like a diagonal that fades as
-        it extends towards the corners of the matrix.
-        This truth illustrates the properties of the weight matrix:
-            Weight[x][x] > Weight[x][x-1] > Weight[x][x-2] and...
-            Weight[x][x] > Weight[x][x+1] > Weight[x][x+2]
-        - This is the attractor network of n nodes. Each node
-            can be thought of as a vector representation within
-            the phase space A of d-dimensionality where n>d.
-        - The attractor network exists within a phase space A.
-            This contains a set of network states that can be
-            consider manifold-like. 
-        - Attractor networks are initialized based on the input
-            pattern. The dimensionality of the input pattern may
-            differ from that of the network nodes. 
-        - The trajectory of the network is a set of states along
-            the evolution path as the network converges toward the
-            attractor state. 
-        - The basin of attraction is the set of states that results in
-            movement towards a certain attractor. So in RatSLAM
-            this basin of attraction is a phase line representing
-            orientation 0-360 etc. 
-    Neural unit (A single "continuous activation value"
-                between 0 and 1 that is the activation 
-                value of the unit. The weightings between
-                the units doesnt change.
-                It is fixed, only how the units activate
-                changes.)
-        - Calculate activity by summing the activity
-            from other nerual units through the weighted
-            connections.
-        - Connections are weighted by their distance to eachother
-        - Activation value increases when the system approaches
-            a location associated with that neural unit. 
-        - Can have many recurrent connections which
-            will emphasise a state. Over time, without
-            disturbance these self-stimulations will
-            bring the system to a stable state. 
-"""
-
+from attractor import ATTRACTOR
 import numpy as np
+import cv2
+import sys
 
-class ATTRACTOR(object):
-    def __init__(self):
-        # FIXED VALUED PARAMS
-        self.NE = 75 # Number of excitory neruons
-        self.dt = 0.001 # Time step
+def loadFrames(directory, n):
+    frames = [] 
+    capture = cv2.VideoCapture(directory)
+    count = 0
+    while True:
+        (grabbed, frame) = capture.read()
+        if grabbed and count < n:
+            #frame = cv2.resize(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY),                    (64, 32))
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            frame = cv2.resize(frame, (32, 16), interpolation=cv2.INTER_LANCZOS4)
+            #frame = cv2.resize(frame, None, fx=0.1, fy=0.1, interpolation=cv2.INTER_LANCZOS4)
+            frames.append(frame)
+            count += 1
+        else:
+            break
+            #cv2.imshow(directory, frame)
+            #if cv2.waitKey(1) & 0xFF == ord('q'):
+            #    break
+    print("Frames from video {} loaded! size: {} kb".format(directory,
+        sys.getsizeof(frames)/1024))
+    return frames
 
-        self.tauE = 0.01 # time constant for excitory neurons
-        self.gammaE = -1.5 # tonic inhibition of excitory neurons
+def build_packet(NE, location, active, length):
+    packet = np.zeros((length, NE))
+    packet[np.arange(active),location] = 1
+    return packet
 
-        self.tauI = 0.002 # time constant for inhibitory neurons
-        self.gammaI = -7.5 # tonic inhibition for inhibitor neurons
+class recog(object):
+    def __init__(self, refImages):
+        self.NE = len(refImages)
+        #self.net = ATTRACTOR(self.NE, 13.4, 3.28)
+        self.net = ATTRACTOR(self.NE, 1, 1)
+        self.memories = [self.process_image(image) for image in refImages]
+
+    def step(self, image):
+        matches = self.compare(image)
+        packet = self.build_packet(matches, 1)
+        E = diff = 0
+        for activity in packet:
+            E, diff = self.net.step(activity)
+        #self.settle_activity(3, E)
+        #E = np.clip(E, 0, 0.85)
+        return E, diff
+
+    def process_image(self, image):
+        image = np.sum(image, axis=0)
+        image = np.true_divide(image, np.sum(image))
+        return image
+
+    def compare(self, image):
+        #Perform SAD across all images. 
+        #Choose image with best score.
+        queryImage = self.process_image(image)
+        error = np.ones((self.NE)) 
+        for index in range(len(self.memories)):
+            error[index] = np.sum(np.absolute(queryImage - self.memories[index]))
         
-        self.std = 15 # intra-ring weighting field width (degrees)
-        self.w = 6.0 # intra-ring weighting field strength
+        no_matches = 1
+        matches = []
+        for place in range(no_matches):
+            matches.append(np.argmin(error))
+            error[matches[-1]] = 2
 
-        self.WeightEI = -8.0    # E -> I weight scalar
-        self.WeightIE = 0.880   # I -> E weight scalar
-        self.WeightII = -4.0    # I -> I weight scalar
+        #print("Top {} matches are/is : {}".format(no_matches, matches))
+        return matches 
 
-        # VARIABLES 
-        self.E = np.zeros(self.NE) # NE number of excitory neurons
-        self.I = 0                 # One inhibitor neuron
-        self.W_EI = self.WeightEI * np.ones(self.NE)                    # E -> I Weights
-        self.W_IE = self.WeightIE * np.ones(self.NE)                    # I -> I Weights
-        self.W_II = self.WeightII                                       # I -> I Weights
-        self.W_EE = self.build_weight_matrix(self.NE, self.std, self.w) # E -> E Weights
+    def build_packet(self, location, active):
+        # Todo: Build an actual distribution of a activity
+        packet = np.zeros((active, self.NE))
+        packet[:,location] = 1
+        return packet
 
-        # Recurrent variable
-        self.lastE = self.E
+    def settle_activity(self, iterations, initial_state):
+        E = initial_state
+        for i in range(iterations):
+            E, diff = self.net.step(E)
 
-    def build_weight_matrix(self, NE, std, w):
-        # This process is kind of like building the attractor basin?
-        variance = std**2 / (360**2) * NE**2
-        print(variance)
-        i = np.ones((NE,1)) * np.arange(1,NE+1)
-        j = np.arange(1,NE+1).reshape(NE,1) * np.ones((1,NE))
-        d_choices = np.array((np.absolute(j + NE - i), np.absolute(i + NE - j), np.absolute(j - i)))
-        d = np.amin(d_choices, axis=0)
-        W = np.exp((-d * d)/variance)
-        
-        term = np.true_divide(W, (np.ones(NE) * np.sum(W, axis=0)))
-        W = w * term
-        return W
-
-    def step(self, IN):
-        self.lastE = self.E
-        VE = self.W_EI * self.I + np.dot(self.W_EE, self.E) + self.gammaE + IN # Excitory compute)
-        VI = self.W_II * self.I + np.dot(self.W_IE, self.E) + self.gammaI # Inhibitor compute 
-        
-        FE = self.tanh_activation(VE) # Excitory activation
-        FI = self.tanh_activation(VI) # Inhibitor activation
-        
-        self.E = self.E + self.dt/self.tauE * (-self.E + FE) # Update excitory activity
-        self.I = self.I + self.dt/self.tauI * (-self.I + FI) # Update inhibitor activity
-        
-        diff = np.sum(np.absolute(self.lastE - self.E)) / np.sum(self.E) 
-        return self.E, diff
-
-    def tanh_activation(self, x):
-        return 0.5 + 0.5 * np.tanh(x)
-
-
-import matplotlib.pyplot as plt
-
-net = ATTRACTOR()
-NN_w = net.W_EE
-plt.imshow(NN_w)
-plt.show()
-NE = net.NE
-#IN = np.concatenate((np.ones((100,1)) * np.random.random((1,NE)),np.zeros((100,NE))), axis=0)
-IN0 = 0.5 * (0.1 * np.random.random((1,NE)) + np.exp(-(np.power((np.arange(1,76) - 25),2))/40))
-IN1 = 0.5 * (0.1 * np.random.random((1,NE)) + np.exp(-(np.power((np.arange(1,76) - 45),2))/40))
-IN = np.ones((150,1)) * IN0 + IN1
-#IN = np.ones((10, 75))
-#print(np.shape(IN)[0])
-results = np.zeros((NE, np.shape(IN)[0]))
-print("TESTS: {}".format(np.shape(results)[1]))
-
-
-for put in range(len(IN)):
-    E, diff = net.step(IN[put])
-    #print("INPUT TEST {} [ERROR]:{}".format(put,np.around(diff, decimals=6)))
-    results[:,put] = E
+if __name__ == "__main__":
+    import matplotlib.pyplot as plt 
+    import time
+    refFrames = loadFrames('./day_trunc.avi', 200)
+    queryFrames = loadFrames('./night_trunc.avi', 200)
+    refFrames = refFrames[75:85] #-5]
+    queryFrames = queryFrames[85:95]
+    #queryFrames = refFrames
+    
+    RE = recog(refFrames)
+    RE.settle_activity(100, RE.net.E)
+    results = np.zeros((len(refFrames), len(queryFrames)))
+    for img in range(len(queryFrames)):
+        E,diff = RE.step(queryFrames[img])
+        results[:,img] = E
+        prediction = np.argmax(E)
+        if prediction == img:
+            print("QUERY index [%d] SUCESSFUL PREDICTION" % img)
+        else:
+            #print("QUERY index [%d] FAILED OUTPUT = %d" % (img, prediction))
+            pass
+        plt.clf()
+        plt.ylim((0,1))
+        plt.stem(E, markerfmt='C0.')
+        plt.pause(0.05)
     plt.clf()
     plt.ylim((0,1))
     plt.stem(E, markerfmt='C0.')
-    plt.pause(0.05)
+    plt.show()
+    """
+    while True:
+        E, diff = RE.step(results[:,-1])
+        plt.clf()
+        plt.ylim((0,1))
+        plt.stem(E, markerfmt='C0.')
+        plt.pause(0.05)
+    """ 
+    """
+    i = 0
+    while True:
+        try:
+            frame = np.concatenate((refFrames[i], queryFrames[i]), axis=0)
+        except:
+            break
+        frame = cv2.resize(frame, None, fx=10, fy=10,  interpolation=cv2.INTER_AREA)
+        cv2.imshow('frame', frame)
+        i += 1
+        if cv2.waitKey(15) & 0xFF == ord('q'):
+            break
+    """
+    net = ATTRACTOR()#len(refFrames))
+    NN_w = net.W_EE
+    NE = net.NE
+    #IN = np.zeros((100,NE))
+    #IN[np.arange(100),np.repeat(np.arange(NE),10)]=1
+    IN0 = np.exp(np.true_divide(-np.power(np.arange(NE) - 35,2),25)) 
+    IN1 = np.ones((100,1)) * IN0
+    IN0 = 2 * np.exp(np.true_divide(-np.power(np.arange(NE) - 40,2),25)) 
+    IN2 = np.ones((200,1)) * IN0
+    IN = np.concatenate((IN1,IN2),axis=0)
+    '''
+    IN = np.zeros((30,NE))
+    for i in range(NE):
+        IN = np.concatenate((IN,build_packet(NE,i,3,10)),axis=0)
+    '''
+    results = np.zeros((NE, np.shape(IN)[0]))
+    print("TESTS: {}".format(np.shape(results)[1]))
+    
+    """
+    for put in range(len(IN)):
+        E, diff = net.step(IN[put])
+        print("INPUT TEST {} [ERROR]:{}".format(put,np.around(diff, decimals=6)))
+        results[:,put] = E
+        plt.clf()
+        plt.ylim((0,1))
+        plt.stem(E, markerfmt='C0.')
+        plt.pause(0.05)
 
-plt.stem(results[:,-1])
-plt.show()
-"""
-from mpl_toolkits.mplot3d import Axes3D
+    plt.stem(results[:,-1])
+    plt.show()
+    
+    del refFrames[:]
+    del queryFrames[:]
+    """  
+   
+    """
+    from mpl_toolkits.mplot3d import Axes3D
 
-fig = plt.figure()
-ax = fig.gca(projection='3d')
-X,Y = np.mgrid[0:NE:1, 0:np.shape(IN)[0]:1]
-surf = ax.plot_surface(X, Y, results, cmap='afmhot')
-plt.show()
-"""
+    fig = plt.figure()
+    ax = fig.gca(projection='3d')
+    X,Y = np.mgrid[0:NE:1, 0:np.shape(IN)[0]:1]
+    surf = ax.plot_surface(X, Y, results, cmap='afmhot')
+    plt.show()
+    """
