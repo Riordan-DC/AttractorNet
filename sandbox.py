@@ -5,8 +5,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 if __name__ == "__main__":
-    NE = 35 
-    net = ATTRACTOR(NE, 13.4, 3.28)
+    NE = 10
+    #net = ATTRACTOR(NE, 13.4, 3.28)
+    net = ATTRACTOR(NE, 10,2.4)
     
     E = np.zeros(NE)
    
